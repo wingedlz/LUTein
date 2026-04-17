@@ -94,20 +94,43 @@ ALL TESTS PASSED
 pe_tb.v:499: $finish called at 2555 (1s)
 ```
 
-### 2. Sparse core testbench
+### 2. Dense core testbench
 
 Run the sparse core testbench with:
 
 ```bash
-iverilog -g2012 -o simv pe_modules.v lutein_sparse_core.v
+iverilog -g2012 -o simv pe_modules.v lutein_dense_core.v lutein_dense_core_tb.v
+```
+
+#### Expected output
+
+```text
+[PASS] dense tile check passed at time=146
+[DONE] dense core tb finished
+lutein_dense_core_tb.v:191: $finish called at 185 (1s)
+```
+
+### 3. Sparse core testbench
+
+Run the sparse core testbench with:
+
+```bash
+iverilog -g2012 -o simv pe_modules.v lutein_sparse_core.v lutein_dense_core.v lutein_sparse_core_tb.v
 vvp simv
 ```
 
 #### Expected output
 
 ```text
-[PASS] mode=0 time=295000
-[PASS] mode=1 time=395000
-[DONE] sparse rle core tb finished
-lutein_sparse_core.v:490: $finish called at 395000 (1ps)
+[PASS] TC01_dense_metadata packed metadata time=266000
+[PASS] TC01_dense_outputs outputs time=426000
+[PASS] TC02_sparse_metadata packed metadata time=736000
+[PASS] TC02_sparse_outputs outputs time=896000
+[PASS] TC03_sparse_single_row_metadata packed metadata time=1206000
+[PASS] TC03_sparse_single_row_outputs outputs time=1366000
+============================================================
+TB SUMMARY: total=6 pass=6 fail=0
+============================================================
+ALL TESTS PASSED
+lutein_sparse_core_tb.v:477: $finish called at 1465000 (1ps)
 ```
