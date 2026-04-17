@@ -13,6 +13,7 @@ module tb_lutein_slice_tensor_pe;
     reg clear_acc;
     reg accum_en;
     reg out_ready;
+    reg in_slice_fwd_ready;
     reg signed [IN_LANES*ACT_W-1:0] in_slice_flat;
     reg signed [IN_LANES*OUT_CH*WGT_W-1:0] wgt_slice_flat;
     wire in_ready;
@@ -20,6 +21,7 @@ module tb_lutein_slice_tensor_pe;
     wire signed [OUT_CH*PSUM_W-1:0] out_psum_flat;
     wire signed [IN_LANES*ACT_W-1:0] in_slice_fwd_flat;
     wire in_slice_fwd_valid;
+    
 
     integer i;
     integer j;
@@ -53,6 +55,7 @@ module tb_lutein_slice_tensor_pe;
         .clear_acc(clear_acc),
         .accum_en(accum_en),
         .out_ready(out_ready),
+        .in_slice_fwd_ready(in_slice_fwd_ready),
         .in_slice_flat(in_slice_flat),
         .wgt_slice_flat(wgt_slice_flat),
         .in_ready(in_ready),
@@ -243,6 +246,7 @@ module tb_lutein_slice_tensor_pe;
         clear_acc = 1'b0;
         accum_en = 1'b1;
         out_ready = 1'b1;
+        in_slice_fwd_ready = 1'b1;
         in_slice_flat = '0;
         wgt_slice_flat = '0;
         seed = 32'h1234abcd;

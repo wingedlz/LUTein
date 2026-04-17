@@ -86,7 +86,6 @@ module lutein_radix4_lut_mult_4b (
 
     assign p = $signed(pp_lo) + ($signed(pp_hi) <<< 2);
 endmodule
-
 module lutein_slice_tensor_pe #(
     parameter integer IN_LANES = 4,
     parameter integer OUT_CH   = 8,
@@ -96,42 +95,64 @@ module lutein_slice_tensor_pe #(
     parameter integer ACC_W    = 24,
     parameter integer PSUM_W   = 24
 ) (
-    input  wire                              clk,
-    input  wire                              rst_n,
-    input  wire                              in_valid,
-    input  wire                              clear_acc,
-    input  wire                              accum_en,
-    input  wire                              out_ready,
-    input  wire                              in_slice_fwd_ready,
-    input  wire signed [IN_LANES*ACT_W-1:0]  in_slice_flat,
+    input  wire                                    clk,
+    input  wire                                    rst_n,
+    input  wire                                    in_valid,
+    input  wire                                    clear_acc,
+    input  wire                                    accum_en,
+    input  wire                                    out_ready,
+    input  wire                                    in_slice_fwd_ready,
+    input  wire signed [IN_LANES*ACT_W-1:0]        in_slice_flat,
     input  wire signed [IN_LANES*OUT_CH*WGT_W-1:0] wgt_slice_flat,
-    output wire                              in_ready,
-    output reg                               out_valid,
-    output reg  signed [OUT_CH*PSUM_W-1:0]   out_psum_flat,
-    output reg  signed [IN_LANES*ACT_W-1:0]  in_slice_fwd_flat,
-    output reg                               in_slice_fwd_valid
+    output wire                                    in_ready,
+    output reg                                     out_valid,
+    output reg  signed [OUT_CH*PSUM_W-1:0]         out_psum_flat,
+    output reg  signed [IN_LANES*ACT_W-1:0]        in_slice_fwd_flat,
+    output reg                                     in_slice_fwd_valid
 );
+
     integer i;
     integer j;
 
-    reg signed [ACT_W-1:0] in_q [0:IN_LANES-1];
-    reg signed [WGT_W-1:0] w_q  [0:IN_LANES-1][0:OUT_CH-1];
-    reg                    compute_pending;
-    reg                    zero_q;
+    // ------------------------------------------------------------------------
+    // Stage-0 registers
+    // ------------------------------------------------------------------------
+    reg                    s0_valid;
+    reg                    s0_zero_q;
+    reg                    s0_accum_en;
 
+    reg signed [IN_LANES*ACT_W-1:0] in_slice_q_flat;
+    reg signed [ACT_W-1:0]          in_q [0:IN_LANES-1];
+    reg signed [WGT_W-1:0]          w_q  [0:IN_LANES-1][0:OUT_CH-1];
+
+    // Accumulators
     reg signed [ACC_W-1:0] acc_reg [0:OUT_CH-1];
-    reg signed [ACC_W-1:0] sum_per_oc [0:OUT_CH-1];
 
+    // Current stage-0 dot-product sums
+    reg  signed [ACC_W-1:0] sum_per_oc [0:OUT_CH-1];
     wire signed [PROD_W-1:0] prod [0:IN_LANES-1][0:OUT_CH-1];
 
-    wire out_chan_free;
-    wire fwd_chan_free;
+    // ------------------------------------------------------------------------
+    // Valid/ready + fire control
+    // ------------------------------------------------------------------------
+    wire can_send_fwd;
+    wire can_send_out;
+    wire retire_fire;
+    wire accept_fire;
 
-    assign out_chan_free = (~out_valid) || out_ready;
-    assign fwd_chan_free = (~in_slice_fwd_valid) || in_slice_fwd_ready;
+    assign can_send_fwd = (~in_slice_fwd_valid) || in_slice_fwd_ready;
+    assign can_send_out = (~out_valid) || out_ready;
 
-    assign in_ready = (~compute_pending) && out_chan_free && fwd_chan_free;
+    assign retire_fire = s0_valid &&
+                         can_send_fwd &&
+                         ((~s0_accum_en) || can_send_out);
 
+    assign in_ready    = (~s0_valid) || retire_fire;
+    assign accept_fire = in_valid && in_ready;
+
+    // ------------------------------------------------------------------------
+    // Parallel multipliers
+    // ------------------------------------------------------------------------
     genvar gi;
     genvar gj;
     generate
@@ -146,6 +167,9 @@ module lutein_slice_tensor_pe #(
         end
     endgenerate
 
+    // ------------------------------------------------------------------------
+    // Per-output-channel reduction
+    // ------------------------------------------------------------------------
     always @(*) begin
         for (j = 0; j < OUT_CH; j = j + 1) begin
             sum_per_oc[j] = '0;
@@ -155,14 +179,26 @@ module lutein_slice_tensor_pe #(
         end
     end
 
+    // ------------------------------------------------------------------------
+    // Sequential state update
+    // ------------------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
+        reg zero_detect;
+        reg signed [ACC_W-1:0] acc_base;
+        reg signed [ACC_W-1:0] acc_next;
+
         if (!rst_n) begin
-            compute_pending   <= 1'b0;
-            out_valid         <= 1'b0;
+            s0_valid           <= 1'b0;
+            s0_zero_q          <= 1'b0;
+            s0_accum_en        <= 1'b0;
+
+            out_valid          <= 1'b0;
+            out_psum_flat      <= '0;
+
             in_slice_fwd_valid <= 1'b0;
-            in_slice_fwd_flat <= '0;
-            out_psum_flat     <= '0;
-            zero_q            <= 1'b0;
+            in_slice_fwd_flat  <= '0;
+
+            in_slice_q_flat    <= '0;
 
             for (i = 0; i < IN_LANES; i = i + 1) begin
                 in_q[i] <= '0;
@@ -175,52 +211,71 @@ module lutein_slice_tensor_pe #(
                 acc_reg[j] <= '0;
             end
         end else begin
-            if (clear_acc) begin
+            // ----------------------------------------------------------------
+            // Valid flags: keep old data if not consumed, or refill on fire
+            // ----------------------------------------------------------------
+            in_slice_fwd_valid <= (in_slice_fwd_valid && !in_slice_fwd_ready) || retire_fire;
+            out_valid          <= (out_valid && !out_ready) || (retire_fire && s0_accum_en);
+
+            // ----------------------------------------------------------------
+            // Accumulator clear when no retire happens this cycle
+            // ----------------------------------------------------------------
+            if (clear_acc && !retire_fire) begin
                 for (j = 0; j < OUT_CH; j = j + 1) begin
                     acc_reg[j] <= '0;
                 end
             end
 
-            if (out_valid && out_ready) begin
-                out_valid <= 1'b0;
+            // ----------------------------------------------------------------
+            // Retire current stage-0 token
+            // ----------------------------------------------------------------
+            if (retire_fire) begin
+                in_slice_fwd_flat <= in_slice_q_flat;
+
+                if (s0_accum_en) begin
+                    for (j = 0; j < OUT_CH; j = j + 1) begin
+                        acc_base = clear_acc ? '0 : acc_reg[j];
+
+                        if (s0_zero_q) begin
+                            acc_next = acc_base;
+                        end else begin
+                            acc_next = $signed(acc_base) + $signed(sum_per_oc[j]);
+                        end
+
+                        acc_reg[j] <= acc_next;
+                        out_psum_flat[j*PSUM_W +: PSUM_W] <= acc_next;
+                    end
+                end
             end
 
-            if (in_slice_fwd_valid && in_slice_fwd_ready) begin
-                in_slice_fwd_valid <= 1'b0;
-            end
+            // ----------------------------------------------------------------
+            // Accept new input token into stage-0
+            // ----------------------------------------------------------------
+            if (accept_fire) begin
+                zero_detect = 1'b1;
 
-            if (in_valid && in_ready) begin
-                zero_q <= 1'b1;
+                in_slice_q_flat <= in_slice_flat;
+                s0_accum_en     <= accum_en;
 
                 for (i = 0; i < IN_LANES; i = i + 1) begin
                     in_q[i] <= $signed(in_slice_flat[i*ACT_W +: ACT_W]);
+
                     if ($signed(in_slice_flat[i*ACT_W +: ACT_W]) != 0)
-                        zero_q <= 1'b0;
+                        zero_detect = 1'b0;
 
                     for (j = 0; j < OUT_CH; j = j + 1) begin
                         w_q[i][j] <= $signed(wgt_slice_flat[(i*OUT_CH + j)*WGT_W +: WGT_W]);
                     end
                 end
 
-                in_slice_fwd_flat  <= in_slice_flat;
-                in_slice_fwd_valid <= 1'b1;
-                compute_pending    <= 1'b1;
+                s0_zero_q <= zero_detect;
             end
 
-            if (compute_pending) begin
-                if (accum_en) begin
-                    for (j = 0; j < OUT_CH; j = j + 1) begin
-                        if (zero_q) begin
-                            out_psum_flat[j*PSUM_W +: PSUM_W] <= acc_reg[j];
-                        end else begin
-                            acc_reg[j] <= $signed(acc_reg[j]) + $signed(sum_per_oc[j]);
-                            out_psum_flat[j*PSUM_W +: PSUM_W] <= $signed(acc_reg[j]) + $signed(sum_per_oc[j]);
-                        end
-                    end
-                    out_valid <= 1'b1;
-                end
-                compute_pending <= 1'b0;
-            end
+            // ----------------------------------------------------------------
+            // Stage-0 valid update
+            // ----------------------------------------------------------------
+            s0_valid <= (s0_valid && !retire_fire) || accept_fire;
         end
     end
+
 endmodule
