@@ -69,23 +69,45 @@ Row3 → Slot2
 - Slot index ≠ row index
 - Original index is preserved and used for weight lookup
 
----
-
 ## 🧪 Simulation
 
 ### Requirements
-- Icarus Verilog (iverilog)
+- Icarus Verilog (`iverilog`)
 - GTKWave (optional)
 
-### Run
+### 1. PE testbench
+
+Run the PE testbench with:
+
+```bash
+iverilog -g2012 -o simv pe_modules.v pe_tb.v
+vvp simv
+```
+
+#### Expected output
+
+```text
+============================================================
+TB SUMMARY: total=61 pass=61 fail=0
+============================================================
+ALL TESTS PASSED
+pe_tb.v:499: $finish called at 2555 (1s)
+```
+
+### 2. Sparse core testbench
+
+Run the sparse core testbench with:
 
 ```bash
 iverilog -g2012 -o simv pe_modules.v lutein_sparse_core.v
 vvp simv
+```
 
+#### Expected output
 
-### Expected Output
+```text
 [PASS] mode=0 time=295000
 [PASS] mode=1 time=395000
 [DONE] sparse rle core tb finished
-lutein_sparse_core.v:490: $finish called at 395000 (1ps) 
+lutein_sparse_core.v:490: $finish called at 395000 (1ps)
+```
